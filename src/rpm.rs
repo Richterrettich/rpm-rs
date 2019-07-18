@@ -15,12 +15,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::convert::TryInto;
 use std::fmt;
 use std::fmt::Display;
-use std::io::{self, Read, Write};
+use std::io;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use std::time::UNIX_EPOCH;
+use tokio;
+use tokio::prelude::*;
 
+use std::time::UNIX_EPOCH;
 
 const LEAD_SIZE: usize = 96;
 const RPM_MAGIC: [u8; 4] = [0xed, 0xab, 0xee, 0xdb];
@@ -40,6 +42,20 @@ impl RPMPackage {
         Ok(RPMPackage { metadata, content })
     }
 
+    pub fn parse_async<I: tokio::io::AsyncRead + std::marker::Unpin>(
+        input: I,
+    ) -> impl Future<Item = RPMPackage, Error = RPMError> {
+        RPMPackageMetadata::parse_async(input).and_then(|(metadata, input)| {
+            let content = Vec::new();
+            tokio::io::read_to_end(input, content)
+                .map_err(RPMError::from)
+                .map(|(_, buf)| RPMPackage {
+                    metadata,
+                    content: buf,
+                })
+        })
+    }
+
     pub fn write<W: std::io::Write>(&self, out: &mut W) -> Result<(), RPMError> {
         self.metadata.write(out)?;
         out.write_all(&self.content)?;
@@ -54,6 +70,32 @@ pub struct RPMPackageMetadata {
 }
 
 impl RPMPackageMetadata {
+    pub fn parse_async<I: AsyncRead + std::marker::Unpin>(
+        input: I,
+    ) -> impl Future<Item = (RPMPackageMetadata, I), Error = RPMError> {
+        let lead_buffer = vec![0; LEAD_SIZE];
+        tokio::io::read_exact(input, lead_buffer)
+            .map_err(RPMError::from)
+            .and_then(|(input, buf)| {
+                let lead = Lead::parse(&buf)?;
+                Ok((lead, input))
+            })
+            .and_then(|(lead, input)| {
+                Header::parse_signature_async(input).map(|(header, input)| (lead, header, input))
+            })
+            .and_then(|(lead, signature, input)| {
+                Header::<IndexTag>::parse_async(input).map(|(header, input)| {
+                    (
+                        RPMPackageMetadata {
+                            lead,
+                            signature,
+                            header,
+                        },
+                        input,
+                    )
+                })
+            })
+    }
     fn parse<T: std::io::BufRead>(input: &mut T) -> Result<Self, RPMError> {
         let mut lead_buffer = [0; LEAD_SIZE];
         input.read_exact(&mut lead_buffer)?;
@@ -220,7 +262,7 @@ impl PartialEq for Lead {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Header<T: num::FromPrimitive> {
+pub struct Header<T: num::FromPrimitive + 'static> {
     index_header: IndexHeader,
     index_entries: Vec<IndexEntry<T>>,
     store: Vec<u8>,
@@ -228,19 +270,44 @@ pub struct Header<T: num::FromPrimitive> {
 
 impl<T> Header<T>
 where
-    T: num::FromPrimitive + num::ToPrimitive + PartialEq + Display + std::fmt::Debug + Copy,
+    T: num::FromPrimitive
+        + num::ToPrimitive
+        + PartialEq
+        + Display
+        + std::fmt::Debug
+        + Copy
+        + 'static,
 {
-    fn parse<I: std::io::BufRead>(input: &mut I) -> Result<Header<T>, RPMError> {
-        let mut buf: [u8; 16] = [0; 16];
-        input.read_exact(&mut buf)?;
-        let index_header = IndexHeader::parse(&buf)?;
-        // read rest of header => each index consists of 16 bytes. The index header knows how large the store is.
-        let mut buf = vec![0; (index_header.header_size + index_header.num_entries * 16) as usize];
-        input.read_exact(&mut buf)?;
+    fn parse_async<I: AsyncRead>(input: I) -> impl Future<Item = (Self, I), Error = RPMError> {
+        let buf: [u8; 16] = [0; 16];
+        tokio::io::read_exact(input, buf)
+            .map_err(RPMError::from)
+            .and_then(|(input, buf)| {
+                let header = IndexHeader::parse(&buf)?;
+                Ok((header, input))
+            })
+            .and_then(|(index_header, input)| {
+                // read rest of header => each index consists of 16 bytes. The index header knows how large the store is.
+                let buf =
+                    vec![0; (index_header.header_size + index_header.num_entries * 16) as usize];
+                tokio::io::read_exact(input, buf)
+                    .map_err(RPMError::from)
+                    .and_then(|(input, buf)| Ok((buf, index_header, input)))
+            })
+            .and_then(|(buf, index_header, input)| {
+                let header = Self::parse_header_struct(index_header, buf)?;
+                Ok((header, input))
+            })
+    }
 
+    fn parse_header_struct(
+        index_header: IndexHeader,
+        content: Vec<u8>,
+    ) -> Result<Header<T>, RPMError> {
         // parse all entries
         let mut entries: Vec<IndexEntry<T>> = Vec::new();
-        let mut bytes = &buf[..];
+
+        let mut bytes = &content[..];
         let mut buf_len = bytes.len();
         for _ in 0..index_header.num_entries {
             let (rest, entry) = IndexEntry::parse(bytes)?;
@@ -250,7 +317,7 @@ where
             buf_len = bytes.len();
         }
 
-        assert_eq!(bytes.len(), index_header.header_size as usize);
+        assert_eq!(buf_len, index_header.header_size as usize);
 
         let store = Vec::from(bytes);
         // add data to entries
@@ -299,12 +366,22 @@ where
                 }
             }
         }
-
         Ok(Header {
             index_header,
             index_entries: entries,
             store,
         })
+    }
+
+    fn parse<I: std::io::BufRead>(input: &mut I) -> Result<Header<T>, RPMError> {
+        let mut buf: [u8; 16] = [0; 16];
+        input.read_exact(&mut buf)?;
+        let index_header = IndexHeader::parse(&buf)?;
+        // read rest of header => each index consists of 16 bytes. The index header knows how large the store is.
+        let mut buf = vec![0; (index_header.header_size + index_header.num_entries * 16) as usize];
+        input.read_exact(&mut buf)?;
+
+        Self::parse_header_struct(index_header, buf)
     }
 
     fn write<W: std::io::Write>(&self, out: &mut W) -> Result<(), RPMError> {
@@ -315,7 +392,6 @@ where
         out.write_all(&self.store)?;
         Ok(())
     }
-
 
     fn find_entry_or_err(&self, tag: &T) -> Result<&IndexEntry<T>, RPMError> {
         for entry in &self.index_entries {
@@ -405,6 +481,26 @@ impl Header<IndexSignatureTag> {
         Self::from_entries(entries, IndexSignatureTag::HEADER_SIGNATURES)
     }
 
+    fn parse_signature_async<I: AsyncRead>(
+        input: I,
+    ) -> impl Future<Item = (Self, I), Error = RPMError> {
+        Self::parse_async(input).and_then(|(header, input)| {
+            // this structure is aligned to 8 bytes - rest is filled up with zeros.
+            // if the size of our store is not a modulo of 8, we discard bytes to align to the 8 byte boundary.
+
+            let modulo = header.index_header.header_size % 8;
+            let discard = if modulo > 0 {
+                let align_size = 8 - modulo;
+                vec![0; align_size as usize]
+            } else {
+                Vec::new()
+            };
+            tokio::io::read_exact(input, discard)
+                .map_err(RPMError::from)
+                .map(|(input, _)| (header, input))
+        })
+    }
+
     fn parse_signature<I: std::io::BufRead>(
         input: &mut I,
     ) -> Result<Header<IndexSignatureTag>, RPMError> {
@@ -432,7 +528,6 @@ impl Header<IndexSignatureTag> {
 }
 
 impl Header<IndexTag> {
-
     pub fn get_payload_format(&self) -> Result<&str, RPMError> {
         self.get_entry_string_data(IndexTag::RPMTAG_PAYLOADFORMAT)
     }
@@ -586,7 +681,6 @@ impl<T: num::FromPrimitive + num::ToPrimitive + std::fmt::Debug> IndexEntry<T> {
     }
 }
 
-
 #[derive(Debug, PartialEq, Eq)]
 enum IndexData {
     Null,
@@ -620,7 +714,6 @@ impl Display for IndexData {
 }
 
 impl IndexData {
-
     fn append(&self, store: &mut Vec<u8>) -> u32 {
         match &self {
             IndexData::Null => 0,
@@ -700,7 +793,6 @@ impl IndexData {
             }
         }
     }
-
 
     fn num_items(&self) -> u32 {
         match self {
@@ -1349,7 +1441,6 @@ impl From<nom::Err<(&[u8], nom::error::ErrorKind)>> for RPMError {
     }
 }
 
-
 pub struct RPMFileOptions {
     destination: String,
     user: String,
@@ -1410,13 +1501,11 @@ impl RPMFileOptionsBuilder {
     }
 }
 
-
 impl Into<RPMFileOptions> for RPMFileOptionsBuilder {
     fn into(self) -> RPMFileOptions {
         self.inner
     }
 }
-
 
 pub struct RPMBuilder {
     name: String,
@@ -1449,7 +1538,6 @@ pub struct RPMBuilder {
     compressor: Compressor,
 }
 
-
 pub enum Compressor {
     None(Vec<u8>),
     Gzip(libflate::gzip::Encoder<Vec<u8>>),
@@ -1464,7 +1552,7 @@ impl Write for Compressor {
     }
     fn flush(&mut self) -> Result<(), std::io::Error> {
         match self {
-            Compressor::None(data) => data.flush(),
+            Compressor::None(data) => std::io::Write::flush(data),
             Compressor::Gzip(encoder) => encoder.flush(),
         }
     }
@@ -1534,7 +1622,6 @@ impl RPMBuilder {
         self
     }
 
-
     pub fn add_changelog_entry<E, F>(mut self, author: E, entry: F, time: i32) -> Self
     where
         E: Into<String>,
@@ -1545,7 +1632,6 @@ impl RPMBuilder {
         self.changelog_times.push(time);
         self
     }
-
 
     pub fn with_file<T: Into<RPMFileOptions>>(
         mut self,
@@ -1680,9 +1766,7 @@ impl RPMBuilder {
 
         let lead = Lead::new(&self.name);
 
-
         let mut ino_index = 1;
-
 
         let mut file_sizes = Vec::new();
         let mut file_modes = Vec::new();
@@ -1701,7 +1785,6 @@ impl RPMBuilder {
         let mut base_names = Vec::new();
 
         let mut combined_file_sizes = 0;
-
 
         for (cpio_path, entry) in self.files.iter() {
             combined_file_sizes += entry.size;
@@ -1739,7 +1822,6 @@ impl RPMBuilder {
             writer.finish()?;
 
             ino_index += 1;
-
         }
 
         self.requires.push(Dependency::any("/bin/sh".to_string()));
@@ -1750,7 +1832,6 @@ impl RPMBuilder {
             format!("{}({})", self.name.clone(), self.arch.clone()),
             self.version.clone(),
         ));
-
 
         let mut provide_names = Vec::new();
         let mut provide_flags = Vec::new();
@@ -1799,7 +1880,6 @@ impl RPMBuilder {
                 offset,
                 IndexData::StringTag("C".to_string()),
             ),
-
             IndexEntry::new(
                 IndexTag::RPMTAG_NAME,
                 offset,
@@ -1847,7 +1927,6 @@ impl RPMBuilder {
                 offset,
                 IndexData::I18NString(vec!["Unspecified".to_string()]),
             ),
-
             IndexEntry::new(
                 IndexTag::RPMTAG_ARCH,
                 offset,
@@ -2142,11 +2221,25 @@ impl RPMBuilder {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::prelude::*;
+
+    #[test]
+
+    fn test_async_header() -> Result<(), Box<std::error::Error>> {
+        let d = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut rpm_file_path = d.clone();
+        rpm_file_path.push("test_assets/389-ds-base-devel-1.3.8.4-15.el7.x86_64.rpm");
+        let mut buf = Vec::new();
+        std::fs::File::open(rpm_file_path)?.read_to_end(&mut buf)?;
+        let cursor = std::io::Cursor::new(buf);
+        println!("parsing metadata");
+        let (metadata, _) = RPMPackageMetadata::parse_async(cursor).wait()?;
+        println!("testing metadata");
+        test_metadata(&metadata)?;
+        Ok(())
+    }
 
     #[test]
     fn test_header() -> Result<(), Box<std::error::Error>> {
@@ -2158,6 +2251,19 @@ mod tests {
 
         let package = RPMPackage::parse(&mut buf_reader)?;
         let metadata = &package.metadata;
+
+        test_metadata(metadata)?;
+
+        let mut buf = Vec::new();
+        package.write(&mut buf)?;
+        let second_pkg = RPMPackage::parse(&mut buf.as_ref())?;
+        assert_eq!(package.content.len(), second_pkg.content.len());
+        assert!(package.metadata == second_pkg.metadata);
+
+        Ok(())
+    }
+
+    fn test_metadata(metadata: &RPMPackageMetadata) -> Result<(), RPMError> {
         assert_eq!(7, metadata.signature.index_entries.len());
         assert!(metadata.signature.index_entries[0].num_items == 16);
         assert_eq!(1156, metadata.signature.index_header.header_size);
@@ -2350,51 +2456,30 @@ mod tests {
 
         let mut buf = Vec::new();
 
-        package.metadata.lead.write(&mut buf)?;
+        metadata.lead.write(&mut buf)?;
         assert_eq!(96, buf.len());
 
         let lead = Lead::parse(&buf)?;
-        assert!(package.metadata.lead == lead);
-
-        buf_reader.seek(io::SeekFrom::Start(0))?;
-        let mut expected = vec![0; 96];
-        // buf_reader.read_to_end(&mut expected);
-        buf_reader.read_exact(&mut expected)?;
-
-        for i in 0..expected.len() {
-            assert_eq!(expected[i], buf[i]);
-        }
+        assert!(metadata.lead == lead);
 
         buf = Vec::new();
-        package.metadata.signature.write_signature(&mut buf)?;
+        metadata.signature.write_signature(&mut buf)?;
         let signature = Header::parse_signature(&mut buf.as_ref())?;
 
-        assert_eq!(
-            package.metadata.signature.index_header,
-            signature.index_header
-        );
+        assert_eq!(metadata.signature.index_header, signature.index_header);
 
         for i in 0..signature.index_entries.len() {
             assert_eq!(
                 signature.index_entries[i],
-                package.metadata.signature.index_entries[i]
+                metadata.signature.index_entries[i]
             );
         }
-        assert_eq!(
-            package.metadata.signature.index_entries,
-            signature.index_entries
-        );
+        assert_eq!(metadata.signature.index_entries, signature.index_entries);
 
         buf = Vec::new();
-        package.metadata.header.write(&mut buf)?;
+        metadata.header.write(&mut buf)?;
         let header = Header::parse(&mut buf.as_ref())?;
-        assert_eq!(package.metadata.header, header);
-
-        buf = Vec::new();
-        package.write(&mut buf)?;
-        let second_pkg = RPMPackage::parse(&mut buf.as_ref())?;
-        assert_eq!(package.content.len(), second_pkg.content.len());
-        assert!(package.metadata == second_pkg.metadata);
+        assert_eq!(metadata.header, header);
 
         Ok(())
     }
@@ -2446,9 +2531,7 @@ mod tests {
             // .requires(Dependency::any("wget".to_string()))
             .build()?;
 
-
         pkg.write(&mut f)?;
-
 
         let mut handles = Vec::new();
         for image in vec!["fedora:30", "centos:7"] {
@@ -2497,4 +2580,3 @@ mod tests {
     }
 
 }
-
