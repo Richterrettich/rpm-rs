@@ -5,8 +5,8 @@ use std::process::Stdio;
 use std::str::FromStr;
 
 fn test_rpm_file_path() -> std::path::PathBuf {
-    let mut rpm_path = cargo_manifest_dir();
-    rpm_path.push("test_assets/389-ds-base-devel-1.3.8.4-15.el7.x86_64.rpm");
+    let mut rpm_path = std::path::PathBuf::from("/tmp/coz-0.2.3-3.fc32.x86_64.rpm");
+    // rpm_path.push("");
     rpm_path
 }
 
@@ -107,7 +107,7 @@ mod pgp {
         let (signing_key, verification_key) = crate::signature::pgp::test::load_asc_keys();
 
         let cargo_file = cargo_manifest_dir().join("Cargo.toml");
-        let out_file = cargo_out_dir().join("roundtrip.rpm");
+        let out_file = test_rpm_file_path();
 
         {
             let signer = Signer::load_from_asc_bytes(signing_key.as_ref())?;
@@ -302,7 +302,7 @@ fn podman_container_launcher(
     mappings.extend(vec![out, assets, var_cache]);
     let mut args = mappings
         .iter()
-        .fold(vec!["run", "-i", "--rm"], |mut acc, mapping| {
+        .fold(vec!["--storage-driver=btrfs", "run", "-i", "--rm"], |mut acc, mapping| {
             acc.extend(vec!["-v", mapping]);
             acc
         });
