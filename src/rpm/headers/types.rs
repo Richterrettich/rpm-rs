@@ -160,3 +160,17 @@ impl Dependency {
         }
     }
 }
+
+#[repr(u32)]
+pub enum RPMPolicyFlags {
+    Default = 0,
+    Base = 1,
+}
+
+/// Description of SELinux policy.
+pub struct RPMPolicy {
+    pub(crate) name: String,
+    pub(crate) content: String,
+    pub(crate) types: Vec<String>,
+    pub(crate) flags: RPMPolicyFlags,
+}

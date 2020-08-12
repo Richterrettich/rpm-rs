@@ -39,8 +39,11 @@ pub struct RPMBuilder {
     // File entries need to be sorted. The entries need to be in the same order as they come
     // in the cpio payload. Otherwise rpm will not be able to resolve those paths.
     // key is the directory, values are complete paths
-    files: std::collections::BTreeMap<String, RPMFileEntry>,
-    directories: std::collections::BTreeSet<String>,
+    files: BTreeMap<String, RPMFileEntry>,
+    directories: BTreeSet<String>,
+
+    policies: Vec<RPMPolicy>,
+
     requires: Vec<Dependency>,
     obsoletes: Vec<Dependency>,
     provides: Vec<Dependency>,
@@ -83,6 +86,7 @@ impl RPMBuilder {
             changelog_times: Vec::new(),
             compressor: Compressor::None(Vec::new()),
             directories: BTreeSet::new(),
+            policies: Vec::new(),
         }
     }
 
@@ -233,6 +237,51 @@ impl RPMBuilder {
     pub fn provides(mut self, dep: Dependency) -> Self {
         self.provides.push(dep);
         self
+    }
+
+    /// Include a SELinux policy file.
+    ///
+    /// Will not create a header entry, but rather
+    pub fn with_policy_file<P: AsRef<Path>>(
+        self,
+        source: P,
+        types: Vec<String>,
+        flags: RPMPolicyFlags,
+    ) -> Result<Self, RPMError> {
+        let source = source.as_ref();
+        let mut input = std::fs::File::open(source)?;
+        let mut content = Vec::new();
+        input.read_to_end(&mut content)?;
+        let content = String::from_utf8(content).map_err(|e| RPMError::from(
+            format!("Content is not valid utf-8: {}", e),
+        ))?;
+
+        let name = source.file_stem().map(std::ffi::OsStr::to_str).flatten()
+            .ok_or_else(|| RPMError::new(
+                "Failed to obtain file stem of policy file",
+            ))?;
+
+        self.with_policy(name.to_owned(), content, types, flags)
+    }
+
+    pub fn with_policy(
+        mut self,
+        name: String,
+        content: String,
+        types: Vec<String>,
+        flags: RPMPolicyFlags,
+    ) -> Result<Self, RPMError> {
+
+        let policy = RPMPolicy {
+            flags,
+            content,
+            name: name.clone(),
+            types,
+        };
+
+        self.policies.push(policy);
+
+        Ok(self)
     }
 
     /// build without a signature
@@ -451,6 +500,25 @@ impl RPMBuilder {
             conflicts_versions.push(d.version);
         }
 
+        let capa = self.policies.len();
+        let mut policies = Vec::with_capacity(capa);
+        let mut policy_names = Vec::with_capacity(capa);
+        let mut policy_types = Vec::with_capacity(capa);
+        let mut policy_typesindices = Vec::with_capacity(capa << 1);
+        let mut policy_flags = Vec::with_capacity(capa);
+        // Mapping is implicit by the index in the vector
+        // see https://github.com/Richterrettich/rpm-rs/issues/18 for further details.
+        for (idx, policy) in self.policies.into_iter().enumerate() {
+            // direct mapping per index
+            policies.push(base64::encode(policy.content.as_bytes()));
+            policy_names.push(policy.name);
+            policy_flags.push(policy.flags as i32);
+
+            // indirect 1:N mapping
+            policy_typesindices.extend(std::iter::repeat(idx as i32).take(policy.types.len()));
+            policy_types.extend(policy.types);
+        }
+
         let offset = 0;
         let mut actual_records = vec![
             IndexEntry::new(
@@ -619,6 +687,31 @@ impl RPMBuilder {
                 IndexTag::RPMTAG_PROVIDEFLAGS,
                 offset,
                 IndexData::Int32(provide_flags),
+            ),
+            IndexEntry::new(
+                IndexTag::RPMTAG_POLICIES,
+                offset,
+                IndexData::StringArray(policies)
+            ),
+            IndexEntry::new(
+                IndexTag::RPMTAG_POLICYNAMES,
+                offset,
+                IndexData::StringArray(policy_names)
+            ),
+            IndexEntry::new(
+                IndexTag::RPMTAG_POLICYFLAGS,
+                offset,
+                IndexData::Int32(policy_flags)
+            ),
+            IndexEntry::new(
+                IndexTag::RPMTAG_POLICYTYPES,
+                offset,
+                IndexData::StringArray(policy_types)
+            ),
+            IndexEntry::new(
+                IndexTag::RPMTAG_POLICYTYPESINDEXES,
+                offset,
+                IndexData::Int32(policy_typesindices)
             ),
         ];
 

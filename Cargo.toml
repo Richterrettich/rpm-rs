@@ -33,6 +33,7 @@ rand = { version = "0.7" }
 pgp = { version = "0.6", optional = true }
 chrono = "0.4"
 log = "0.4"
+base64 = "0.12"
 
 [dev-dependencies]
 rsa = { version = "^0.3.0" }
