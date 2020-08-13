@@ -1,6 +1,8 @@
 //! A collection of types used in various header records.
 
 use crate::constants::*;
+use std::convert::TryFrom;
+use crate::errors::RPMError;
 
 /// Describes a file present in the rpm file.
 pub struct RPMFileEntry {
@@ -162,12 +164,25 @@ impl Dependency {
 }
 
 #[repr(u32)]
+#[derive(Copy, Clone, Debug)]
 pub enum RPMPolicyFlags {
     Default = 0,
     Base = 1,
 }
 
+impl TryFrom<u32> for RPMPolicyFlags {
+    type Error = RPMError;
+    fn try_from(i: u32) -> Result<Self, Self::Error> {
+        match i {
+            0 => Ok(Self::Default),
+            1 => Ok(Self::Base),
+            x => Err(RPMError::from(format!("Value not valid for conversion to policy flag: {}", x))),
+        }
+    }
+}
+
 /// Description of SELinux policy.
+#[derive(Debug, Clone)]
 pub struct RPMPolicy {
     pub(crate) name: String,
     pub(crate) content: String,

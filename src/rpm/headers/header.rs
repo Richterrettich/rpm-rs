@@ -2,7 +2,7 @@ use nom::bytes::complete;
 use nom::number::complete::{be_i16, be_i32, be_i64, be_i8, be_u32, be_u8};
 
 use crate::constants::*;
-use std::convert::TryInto;
+use std::convert::{TryInto, TryFrom};
 use std::fmt;
 
 use super::*;
@@ -156,6 +156,16 @@ where
         })
     }
 
+    pub(crate) fn get_entry_i32_array_data(&self, tag: T) -> Result<Vec<i32>, RPMError> {
+        let entry = self.find_entry_or_err(&tag)?;
+        entry.data.as_i32_array().ok_or_else(|| {
+            RPMError::new(&format!(
+                "tag {} has datatype {}, not array of i32",
+                entry.tag, entry.data,
+            ))
+        })
+    }
+
     pub(crate) fn get_entry_i64_data(&self, tag: T) -> Result<i64, RPMError> {
         let entry = self.find_entry_or_err(&tag)?;
         entry.data.as_i64().ok_or_else(|| {
@@ -199,7 +209,7 @@ where
         all_records.append(&mut actual_records);
         let store_size = store.len();
 
-        // TODO dunno if this is necessary yet.
+        // @todo dunno if this is necessary yet.
         // if store_size % 8 > 0 {
         //     store_size += 8 - (store_size % 8);
         // }
@@ -307,6 +317,54 @@ impl Header<IndexTag> {
     #[inline]
     pub fn get_install_time(&self) -> Result<i64, RPMError> {
         self.get_entry_i64_data(IndexTag::RPMTAG_INSTALLTIME)
+    }
+
+    /// Obtain the set of SELinux policies which are stored in the header.
+    pub fn get_policies(&self) -> Result<Vec<RPMPolicy>, RPMError> {
+        let policies = self.get_entry_string_array_data(IndexTag::RPMTAG_POLICIES)?;
+        let names = self.get_entry_string_array_data(IndexTag::RPMTAG_POLICYNAMES)?;
+        let flags = self.get_entry_i32_array_data(IndexTag::RPMTAG_POLICYFLAGS)?;
+
+        let types = self.get_entry_string_array_data(IndexTag::RPMTAG_POLICYTYPES)?;
+        let typesindexes = self.get_entry_i32_array_data(IndexTag::RPMTAG_POLICYTYPESINDEXES)?;
+
+        // resolves the mapping of `i` -> `j`,
+        // where
+        // `i` is index of `types[i]` and
+        // `j` is index of `policies[j]`
+        let mut iter = types.into_iter().zip(typesindexes.into_iter()).into_iter().peekable();
+
+        let n = policies.len();
+        itertools::multizip((policies, names, flags))
+            .enumerate()
+            .try_fold(Vec::with_capacity(n), |mut acc, (idx, (policy, name, flags))| {
+                let decoded = base64::decode(policy).map_err(|e|
+                        RPMError::from(format!("Failed to based 64 decode {}: {}", name, e))
+                    )
+                    .and_then(|decoded|
+                        String::from_utf8(decoded).map_err(|e|
+                            RPMError::from(format!("Failed to based 64 decode {}: {}", name, e))
+                        )
+                    )?;
+
+                let mut policy = RPMPolicy {
+                    name: name.to_owned(),
+                    content: decoded,
+                    types: Vec::new(),
+                    flags: RPMPolicyFlags::try_from(flags as u32)?,
+                };
+
+                while let Some((_policytype, associated_idx)) = iter.peek() {
+                    if *associated_idx as usize == idx {
+                        let (policytype, _) = iter.next().expect("Already peeked successfully, must exist. qed");
+                        policy.types.push(policytype.to_owned());
+                    } else {
+                        break;
+                    }
+                }
+                acc.push(policy);
+                Ok(acc)
+            })
     }
 }
 
@@ -693,6 +751,15 @@ impl IndexData {
                 } else {
                     None
                 }
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_i32_array(&self) -> Option<Vec<i32>> {
+        match self {
+            IndexData::Int32(s) => {
+                Some(s.to_vec())
             }
             _ => None,
         }
