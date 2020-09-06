@@ -5,6 +5,7 @@
 
 #[allow(unused)]
 use crate::errors::*;
+use crate::ProcessVerifier;
 use std::fmt::Debug;
 use std::io::Read;
 
@@ -46,7 +47,7 @@ where
 }
 
 /// Verification trait to be implement for RPM signature verification.
-pub trait Verifying<A>: Debug
+pub trait Verifying<A>: Debug + ProcessVerifier
 where
     A: algorithm::Algorithm,
     Self::Signature: AsRef<[u8]>,
