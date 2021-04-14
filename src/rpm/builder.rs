@@ -219,8 +219,8 @@ impl RPMBuilder {
         self
     }
 
-    pub fn release(mut self, release: u16) -> Self {
-        self.release = format!("{}", release);
+    pub fn release<T: Into<String>>(mut self, release: T) -> Self {
+        self.release = release.into();
         self
     }
 
