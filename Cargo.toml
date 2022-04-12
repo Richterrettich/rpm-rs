@@ -29,8 +29,8 @@ enum-display-derive = "0.1"
 cpio = "0.2"
 # consider migrating to flate2
 libflate = "1"
-sha2 = "0.9"
-md-5 = "0.9"
+sha2 = "0.10"
+md-5 = "0.10"
 sha1 = "0.6"
 rand = { version = "0.8" }
 pgp = { version="0.7.2", optional = true }
