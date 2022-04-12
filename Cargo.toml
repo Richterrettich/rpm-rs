@@ -31,7 +31,7 @@ cpio = "0.2"
 libflate = "1"
 sha2 = "0.10"
 md-5 = "0.10"
-sha1 = "0.6"
+sha1 = "0.10"
 rand = { version = "0.8" }
 pgp = { version="0.7.2", optional = true }
 chrono = "0.4"

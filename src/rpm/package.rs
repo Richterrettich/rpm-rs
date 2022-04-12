@@ -88,8 +88,8 @@ impl RPMPackage {
 
         let digest_md5 = hash_result.as_slice();
 
-        let digest_sha1 = sha1::Sha1::from(&header_bytes);
-        let digest_sha1 = digest_sha1.digest();
+        let digest_sha1 = sha1::Sha1::new_with_prefix(&header_bytes);
+        let digest_sha1 = digest_sha1.finalize();
 
         let rsa_signature_spanning_header_only = signer.sign(header_bytes.as_slice())?;
 
@@ -101,7 +101,7 @@ impl RPMPackage {
         self.metadata.signature = Header::<IndexSignatureTag>::new_signature_header(
             header_and_content_cursor.len() as i32,
             digest_md5,
-            digest_sha1.to_string(),
+            hex::encode(digest_sha1),
             rsa_signature_spanning_header_only.as_slice(),
             rsa_signature_spanning_header_and_archive.as_slice(),
         );
