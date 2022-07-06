@@ -370,9 +370,9 @@ impl RPMBuilder {
         let digest_md5 = digest_md5.as_slice();
 
         // header only, not the lead, just the header index
-        let digest_sha1 = sha1::Sha1::from(&header);
-        let digest_sha1 = digest_sha1.digest();
-        let digest_sha1 = digest_sha1.to_string();
+        let digest_sha1 = sha1::Sha1::new_with_prefix(&header);
+        let digest_sha1 = digest_sha1.finalize();
+        let digest_sha1 = hex::encode(digest_sha1);
 
         Ok((digest_sha1, digest_md5.to_vec()))
     }

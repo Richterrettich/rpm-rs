@@ -29,22 +29,22 @@ enum-display-derive = "0.1"
 cpio = "0.2"
 # consider migrating to flate2
 libflate = "1"
-sha2 = "0.9"
-md-5 = "0.9"
-sha1 = "0.6"
+sha2 = "0.10"
+md-5 = "0.10"
+sha1 = "0.10"
 rand = { version = "0.8" }
-pgp = { version="0.7.2", optional = true }
+pgp = { version = "0.8", optional = true }
 chrono = "0.4"
 log = "0.4"
 itertools = "0.10"
 hex = { version = "0.4", features = ["std"] }
-zstd = "0.9.0"
+zstd = "0.11"
 
 [dev-dependencies]
-rsa = { version = "0.5" }
-rsa-der = { version = "^0.2.1" }
+rsa = { version = "0.6" }
+rsa-der = { version = "0.3" }
 env_logger = "0.9"
-serial_test = "0.5"
+serial_test = "0.6"
 tokio = {version = "1", features = ["full"]}
 
 
