@@ -76,6 +76,9 @@ pub struct RPMBuilder {
     changelog_entries: Vec<String>,
     changelog_times: Vec<i32>,
     compressor: Compressor,
+
+    vendor: Option<String>,
+    url: Option<String>,
 }
 
 impl RPMBuilder {
@@ -104,9 +107,19 @@ impl RPMBuilder {
             changelog_times: Vec::new(),
             compressor: Compressor::None(Vec::new()),
             directories: BTreeSet::new(),
+            vendor: None,
+            url: None,
         }
     }
 
+    pub fn vendor<T: Into<String>>(mut self, content: T) -> Self {
+        self.vendor = Some(content.into());
+        self
+    }
+    pub fn url<T: Into<String>>(mut self, content: T) -> Self {
+        self.url = Some(content.into());
+        self
+    }
     pub fn epoch(mut self, epoch: i32) -> Self {
         self.epoch = epoch;
         self
@@ -864,6 +877,22 @@ impl RPMBuilder {
                 IndexTag::RPMTAG_POSTUN,
                 offset,
                 IndexData::StringTag(self.post_uninst_script.unwrap()),
+            ));
+        }
+
+        if self.vendor.is_some() {
+            actual_records.push(IndexEntry::new(
+                IndexTag::RPMTAG_VENDOR,
+                offset,
+                IndexData::StringTag(self.vendor.unwrap()),
+            ));
+        }
+
+        if self.url.is_some() {
+            actual_records.push(IndexEntry::new(
+                IndexTag::RPMTAG_URL,
+                offset,
+                IndexData::StringTag(self.url.unwrap()),
             ));
         }
 
