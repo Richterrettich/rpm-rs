@@ -380,12 +380,20 @@ impl Header<IndexSignatureTag> {
 
     #[inline]
     pub fn get_file_ima_signatures(&self) -> Result<&[String], RPMError> {
-        self.get_entry_string_array_data(IndexSignatureTag::RPMSIGTAG_FILESIGNATURES)
+        let entry = self.get_entry_string_array_data(IndexSignatureTag::RPMSIGTAG_FILESIGNATURES);
+        match entry {
+            Err(RPMError::TagNotFound(_)) => Ok(&[]),
+            _ => entry,
+        }
     }
 
     #[inline]
     pub fn get_file_ima_signature_length(&self) -> Result<i32, RPMError> {
-        self.get_entry_i32_data(IndexSignatureTag::RPMSIGTAG_FILESIGNATURE_LENGTH)
+        let entry = self.get_entry_i32_data(IndexSignatureTag::RPMSIGTAG_FILESIGNATURE_LENGTH);
+        match entry {
+            Err(RPMError::TagNotFound(_)) => Ok(0),
+            _ => entry,
+        }
     }
 }
 
@@ -402,7 +410,11 @@ impl Header<IndexTag> {
 
     #[inline]
     pub fn get_file_checksums(&self) -> Result<&[String], RPMError> {
-        self.get_entry_string_array_data(IndexTag::RPMTAG_FILEDIGESTS)
+        let entry = self.get_entry_string_array_data(IndexTag::RPMTAG_FILEDIGESTS);
+        match entry {
+            Err(RPMError::TagNotFound(_)) => Ok(&[]),
+            _ => entry,
+        }
     }
 
     #[inline]
@@ -437,10 +449,16 @@ impl Header<IndexTag> {
 
     /// Extract a the set of contained file names.
     pub fn get_file_paths(&self) -> Result<Vec<PathBuf>, RPMError> {
-        // reconstruct the messy de-constructed paths
-        let base = self.get_entry_string_array_data(IndexTag::RPMTAG_BASENAMES)?;
-        let biject = self.get_entry_i32_array_data(IndexTag::RPMTAG_DIRINDEXES)?;
-        let dirs = self.get_entry_string_array_data(IndexTag::RPMTAG_DIRNAMES)?;
+        // If an RPM file contains not files, there tags are not present.
+        let base = self
+            .get_entry_string_array_data(IndexTag::RPMTAG_BASENAMES)
+            .unwrap_or(&[]);
+        let biject = self
+            .get_entry_i32_array_data(IndexTag::RPMTAG_DIRINDEXES)
+            .unwrap_or(Vec::new());
+        let dirs = self
+            .get_entry_string_array_data(IndexTag::RPMTAG_DIRNAMES)
+            .unwrap_or(&[]);
 
         let n = dirs.len();
         let v = base
@@ -483,6 +501,11 @@ impl Header<IndexTag> {
 
     /// Extract a the set of contained file names including the additional metadata.
     pub fn get_file_entries(&self) -> Result<Vec<FileEntry>, RPMError> {
+        let paths = self.get_file_paths()?;
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+
         // rpm does not encode it, if it is the default md5
         let algorithm = self.get_file_digest_algorithm().unwrap_or_default();
         //
@@ -506,7 +529,6 @@ impl Header<IndexTag> {
         // @todo
         // let caps = self.get_entry_i32_array_data(IndexTag::RPMTAG_FILECAPS)?;
 
-        let paths = self.get_file_paths()?;
         let n = paths.len();
 
         let v = itertools::multizip((

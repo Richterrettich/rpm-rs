@@ -12,6 +12,12 @@ fn file_signatures_test_rpm_file_path() -> std::path::PathBuf {
     rpm_path
 }
 
+fn test_no_files_rpm_file_path() -> std::path::PathBuf {
+    let mut rpm_path = cargo_manifest_dir();
+    rpm_path.push("test_assets/openssh-9.3p2-2.3.x86_64.rpm");
+    rpm_path
+}
+
 fn cargo_manifest_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -302,6 +308,31 @@ fn test_region_tag() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(entry.tag, IndexSignatureTag::HEADER_SIGNATURES);
     assert_eq!(entry.data.to_u32(), IndexData::Bin(Vec::new()).to_u32());
     assert_eq!(-48, entry.offset);
+
+    Ok(())
+}
+
+#[test]
+fn test_no_rpm_files() -> Result<(), Box<dyn std::error::Error>> {
+    let rpm_file_path = test_no_files_rpm_file_path();
+    let rpm_file = std::fs::File::open(rpm_file_path).expect("should be able to open rpm file");
+    let mut buf_reader = std::io::BufReader::new(rpm_file);
+    let package = RPMPackage::parse(&mut buf_reader)?;
+    assert_eq!(0, package.metadata.header.get_file_paths()?.len());
+    assert_eq!(0, package.metadata.header.get_file_entries()?.len());
+    assert_eq!(
+        0,
+        package.metadata.signature.get_file_ima_signatures()?.len()
+    );
+    assert_eq!(
+        0,
+        package.metadata.signature.get_file_ima_signature_length()?
+    );
+    assert_eq!(0, package.metadata.header.get_file_checksums()?.len());
+    assert_eq!(
+        true,
+        package.metadata.header.get_file_digest_algorithm().is_ok()
+    );
 
     Ok(())
 }
