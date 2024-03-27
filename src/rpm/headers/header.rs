@@ -265,7 +265,7 @@ where
         let mut hie = IndexEntry::new(tag, (records_count + 1) * -16, IndexData::Bin(Vec::new()));
         hie.num_items = 16;
         hie.write_index(&mut header_immutable_index_data)
-            .expect("unabel to write to memory buffer");
+            .expect("unable to write to memory buffer");
         IndexEntry::new(tag, offset, IndexData::Bin(header_immutable_index_data))
     }
 
