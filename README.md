@@ -1,3 +1,8 @@
+# Codebase Moved
+
+Development has moved towards https://github.com/rpm-rs/rpm
+
+
 ## RPM-RS
 
 A pure rust library for parsing and creating RPM files.
